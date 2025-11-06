@@ -16,19 +16,16 @@ Use the provided `Makefile` to set up the CLI wrapper in one step:
 ```bash
 make install
 ```
-This creates `.venv`, installs the dependencies listed in `requirements.txt`, and symlinks the script as `~/.local/bin/pytiffutil`. Include optional extras (e.g. OpenSlide support) by appending them to the `EXTRA` variable:
-```bash
-make EXTRA="openslide-python" install
-```
-To provision the virtual environment without creating the symlink run `make deps`. Remove the CLI later with `make uninstall`. Ensure `~/.local/bin` is on your `PATH` so the `pytiffutil` command is globally available.
+This creates `.venv`, installs the dependencies listed in `requirements.txt`, and symlinks the script as `.venv/bin/pytiffutil`.
+Ensure `.venv/bin` is on your `PATH` so the `pytiffutil` command is globally available by `export PATH=.venv/bin:$PATH`.
 
 ## Command-Line Usage
-The script exposes three subcommands. Replace `python tiffutils.py` with the path from your clone—or use `pytiffutil` if you created the symlink above.
+The script exposes three subcommands. Run `pytiffutil --help` for help.
 
 ### `convert`
 Convert any supported image into a tiled TIFF (optionally pyramidal for OpenSlide for visualization in tools such as QuPath).
 ```bash
-python tiffutils.py convert slide.svs slide.tif \
+pytiffutil convert slide.svs slide.tif \
   --openslide 
 ```
 - `--compression` chooses the TIFF compression scheme (`zlib`, `lzw`, `deflate`, or `none`).
@@ -41,7 +38,7 @@ python tiffutils.py convert slide.svs slide.tif \
 ### `preview`
 Create a downscaled RGB PNG for quick inspection.
 ```bash
-python tiffutils.py preview slide.ome.tif preview.png --max-size 2048
+pytiffutil preview slide.ome.tif preview.png --max-size 2048
 ```
 - `--max-size` caps the longer edge (default 2048 px).
 - The same selector flags (`--series`, `--level`, `--z`, `--t`, `--c/--channels`) apply.
@@ -49,7 +46,7 @@ python tiffutils.py preview slide.ome.tif preview.png --max-size 2048
 ### `describe`
 Summarise OME-TIFF metadata.
 ```bash
-python tiffutils.py describe slide.ome.tif
+pytiffutil describe slide.ome.tif
 ```
 prints a human-readable summary.
 
