@@ -1,4 +1,4 @@
-#!/condo/wanglab/tmhpxz9/conda_env/thor.0.1.1/bin/python3.11
+#!/usr/bin/env python3
 # Requirements: numpy, Pillow, imageio[v3], tifffile, openslide-python (optional)
 
 from __future__ import annotations
