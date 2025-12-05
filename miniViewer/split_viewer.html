@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>MultiwsiView</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/openseadragon.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      font-family: 'Segoe UI', sans-serif;
+      background: #222;
+      color: #eee;
+    }
+
+    /* Top Control Bar */
+    #top-bar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 50px;
+      background: rgba(40, 40, 40, 0.95);
+      border-bottom: 1px solid #444;
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      box-sizing: border-box;
+      z-index: 1000;
+      gap: 20px;
+    }
+
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    select,
+    button {
+      padding: 6px 12px;
+      border-radius: 4px;
+      border: 1px solid #555;
+      background: #333;
+      color: white;
+      cursor: pointer;
+    }
+
+    select:hover,
+    button:hover {
+      background: #444;
+    }
+
+    label {
+      font-size: 14px;
+      user-select: none;
+      cursor: pointer;
+    }
+
+    /* Main Container */
+    #viewer-container {
+      position: absolute;
+      top: 50px;
+      left: 0;
+      width: 100%;
+      height: calc(100vh - 50px);
+      display: flex;
+    }
+
+    .viewer-panel {
+      flex: 1;
+      height: 100%;
+      position: relative;
+      border-right: 1px solid #444;
+    }
+
+    #viewer2 {
+      display: none;
+      border-right: none;
+    }
+
+    /* Hidden by default in Single mode */
+
+    /* Layer Controls (Floating) */
+    #layer-controls {
+      position: absolute;
+      top: 60px;
+      left: 10px;
+      width: 250px;
+      background: rgba(30, 30, 30, 0.9);
+      border: 1px solid #555;
+      border-radius: 6px;
+      padding: 10px;
+      z-index: 2000;
+      display: none;
+      /* Visible in Single Mode */
+    }
+
+    .layer-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .layer-item span {
+      flex: 1;
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .layer-item input[type=range] {
+      width: 80px;
+    }
+
+    .remove-layer {
+      color: #ff6b6b;
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    /* Loading Overlay */
+    #loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0, 0, 0, 0.8);
+      padding: 20px;
+      border-radius: 8px;
+      pointer-events: none;
+      z-index: 5000;
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div id="loading">Loading...</div>
+
+  <div id="top-bar">
+    <div class="control-group">
+      <label><strong>Mode:</strong></label>
+      <select id="modeSelect" onchange="toggleMode()">
+        <option value="single">Single View (Layers)</option>
+        <option value="split">Split View (Side-by-Side)</option>
+      </select>
+    </div>
+
+    <!-- Split Mode Controls -->
+    <div class="control-group" id="split-controls-left" style="display:none;">
+      <label>Left Panel:</label>
+      <select id="leftImageSelect" onchange="loadSplitLeft()"></select>
+    </div>
+    <div class="control-group" id="split-controls-right" style="display:none;">
+      <label>Right Panel:</label>
+      <select id="rightImageSelect" onchange="loadSplitRight()"></select>
+      <label><input type="checkbox" id="syncCheck" checked> Sync Move</label>
+    </div>
+
+    <!-- Single Mode Controls -->
+    <div class="control-group" id="single-controls-base">
+      <label>Base Layer:</label>
+      <select id="baseImageSelect" onchange="loadSingleBase()"></select>
+    </div>
+    <div class="control-group" id="single-controls-add">
+      <label>Add Layer:</label>
+      <select id="layerImageSelect"></select>
+      <button onclick="addLayer()">+</button>
+    </div>
+
+    <div class="control-group" style="margin-left:auto;">
+      <button onclick="zoomToNative()">1:1 Zoom</button>
+      <span id="dimensionsDisplay" style="font-size:12px; margin-left:10px; color:#aaa;"></span>
+    </div>
+  </div>
+
+  <div id="layer-controls">
+    <div style="margin-bottom:10px; font-weight:bold; border-bottom:1px solid #555; padding-bottom:5px;">Layers (Left
+      Viewer)</div>
+    <div id="layers-list"></div>
+  </div>
+
+  <div id="viewer-container">
+    <div id="viewer1" class="viewer-panel"></div>
+    <div id="viewer2" class="viewer-panel"></div>
+  </div>
+
+  <script>
+    // -- Config --
+    const OSD_PREFIX = "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/images/";
+
+    // -- State --
+    let viewer1, viewer2;
+    let availableImages = [];
+    let isSyncing = false;
+
+    // State Storage
+    let singleModeState = []; // Array of { path, name, opacity }
+    let splitLeftState = null; // { path, name }
+
+    // -- Initialization --
+    async function init() {
+      // 1. Setup Viewers
+      viewer1 = OpenSeadragon({
+        id: "viewer1", prefixUrl: OSD_PREFIX,
+        showNavigator: false, maxZoomPixelRatio: 4, blendTime: 0.1
+      });
+
+      viewer2 = OpenSeadragon({
+        id: "viewer2", prefixUrl: OSD_PREFIX,
+        showNavigator: false, maxZoomPixelRatio: 4, blendTime: 0.1
+      });
+
+      // Add handlers to update dimensions when image opens
+      viewer1.addHandler('open', updateDimensions);
+      viewer2.addHandler('open', updateDimensions);
+
+      // 2. Fetch Images
+      await fetchImages();
+
+      // 3. Setup Sync Handlers
+      setupSync();
+
+      // 4. Initial Load
+      if (availableImages.length > 0) {
+        // Initialize states with defaults
+        const firstImg = availableImages[0];
+        singleModeState = [{ path: firstImg.path, name: firstImg.name, opacity: 1 }];
+        splitLeftState = { path: firstImg.path, name: firstImg.name };
+
+        // Pre-select in UI
+        document.getElementById('baseImageSelect').value = firstImg.path;
+        document.getElementById('leftImageSelect').value = firstImg.path;
+
+        if (availableImages.length > 1) {
+          document.getElementById('rightImageSelect').selectedIndex = 1;
+          loadSplitRight();
+        }
+      }
+
+      // Start in Single Mode
+      restoreSingleState();
+      toggleMode();
+    }
+
+    async function fetchImages() {
+      const loading = document.getElementById('loading');
+      loading.style.display = 'block';
+      try {
+        const res = await fetch('/list_dzi');
+        const files = await res.json();
+        availableImages = files;
+
+        populateSelect('leftImageSelect');
+        populateSelect('rightImageSelect');
+        populateSelect('baseImageSelect');
+        populateSelect('layerImageSelect');
+
+      } catch (e) {
+        console.error("Failed to fetch images", e);
+        alert("Error fetching image list.");
+      } finally {
+        loading.style.display = 'none';
+      }
+    }
+
+    function populateSelect(id) {
+      const sel = document.getElementById(id);
+      sel.innerHTML = '';
+      availableImages.forEach(img => {
+        const opt = document.createElement('option');
+        opt.value = img.path;
+        opt.textContent = img.name;
+        sel.appendChild(opt);
+      });
+    }
+
+    // -- Mode Switching --
+    function toggleMode() {
+      const mode = document.getElementById('modeSelect').value;
+
+      const splitLeft = document.getElementById('split-controls-left');
+      const splitRight = document.getElementById('split-controls-right');
+      const singleBase = document.getElementById('single-controls-base');
+      const singleAdd = document.getElementById('single-controls-add');
+      const layerControls = document.getElementById('layer-controls');
+      const v2 = document.getElementById('viewer2');
+
+      if (mode === 'split') {
+        // Switching TO Split Mode
+        saveSingleState(); // Save current Single state before switching
+
+        splitLeft.style.display = 'flex';
+        splitRight.style.display = 'flex';
+        singleBase.style.display = 'none';
+        singleAdd.style.display = 'none';
+        layerControls.style.display = 'none';
+        v2.style.display = 'block';
+
+        restoreSplitState(); // Load Split state into viewer1
+
+        setTimeout(() => { viewer1.forceRedraw(); viewer2.forceRedraw(); }, 100);
+      } else {
+        // Switching TO Single Mode
+        saveSplitState(); // Save current Split state before switching
+
+        splitLeft.style.display = 'none';
+        splitRight.style.display = 'none';
+        singleBase.style.display = 'flex';
+        singleAdd.style.display = 'flex';
+        layerControls.style.display = 'block';
+        v2.style.display = 'none';
+
+        restoreSingleState(); // Load Single state into viewer1
+
+        setTimeout(() => { viewer1.forceRedraw(); }, 100);
+      }
+      updateDimensions();
+    }
+
+    // -- State Management --
+    function saveSingleState() {
+      // Save current viewer1 layers to singleModeState
+      const count = viewer1.world.getItemCount();
+      singleModeState = [];
+      for (let i = 0; i < count; i++) {
+        const item = viewer1.world.getItemAt(i);
+        // We need source path. OSD doesn't make it super easy to get original URL from TiledImage
+        // But we can try item.source.url if it exists, or we rely on our customName/logic.
+        // Ideally we should have tracked it all along.
+        // Let's attach 'customPath' to item when adding.
+        if (item.customPath) {
+          singleModeState.push({
+            path: item.customPath,
+            name: item.customName,
+            opacity: item.getOpacity()
+          });
+        }
+      }
+    }
+
+    function restoreSingleState() {
+      viewer1.world.removeAll();
+      singleModeState.forEach((layer, index) => {
+        viewer1.addTiledImage({
+          tileSource: layer.path,
+          opacity: layer.opacity,
+          index: index,
+          success: (e) => {
+            e.item.customName = layer.name;
+            e.item.customPath = layer.path;
+            if (index === singleModeState.length - 1) {
+              updateLayersList();
+              updateDimensions();
+            }
+          }
+        });
+      });
+      // Update UI selectors to match base layer
+      if (singleModeState.length > 0) {
+        document.getElementById('baseImageSelect').value = singleModeState[0].path;
+      }
+    }
+
+    function saveSplitState() {
+      // Save viewer1 image to splitLeftState
+      if (viewer1.world.getItemCount() > 0) {
+        const item = viewer1.world.getItemAt(0);
+        if (item.customPath) {
+          splitLeftState = { path: item.customPath, name: item.customName };
+        }
+      }
+    }
+
+    function restoreSplitState() {
+      viewer1.world.removeAll();
+      if (splitLeftState) {
+        viewer1.addTiledImage({
+          tileSource: splitLeftState.path,
+          success: (e) => {
+            e.item.customName = splitLeftState.name;
+            e.item.customPath = splitLeftState.path;
+            updateDimensions();
+          }
+        });
+        document.getElementById('leftImageSelect').value = splitLeftState.path;
+      }
+    }
+
+    // -- Pixel Size Logic --
+    function zoomToNative() {
+      // 1:1 means 1 image pixel = 1 screen pixel
+      // OSD zoom level 1 means image fits in viewport (usually) or width=1?
+      // Actually OSD zoom is viewport-width based by default.
+      // viewer.viewport.imageToViewportZoom(1) gives the zoom level where 1 image pixel = 1 viewport unit?
+      // No, we want 1 image pixel = 1 screen pixel.
+
+      // Correct way for 1:1 in OSD:
+      // viewer.viewport.zoomTo(viewer.viewport.imageToViewportZoom(1));
+
+      if (viewer1.world.getItemCount() > 0) {
+        viewer1.viewport.zoomTo(viewer1.viewport.imageToViewportZoom(1));
+      }
+      if (viewer2.world.getItemCount() > 0 && document.getElementById('modeSelect').value === 'split') {
+        viewer2.viewport.zoomTo(viewer2.viewport.imageToViewportZoom(1));
+      }
+    }
+
+    function updateDimensions() {
+      const display = document.getElementById('dimensionsDisplay');
+      let text = "";
+
+      // Left/Base Viewer
+      if (viewer1.world.getItemCount() > 0) {
+        const size = viewer1.world.getItemAt(0).getContentSize();
+        text += `Base: ${size.x}x${size.y}`;
+      }
+
+      // Right Viewer (only if split)
+      if (document.getElementById('modeSelect').value === 'split' && viewer2.world.getItemCount() > 0) {
+        const size = viewer2.world.getItemAt(0).getContentSize();
+        text += ` | Right: ${size.x}x${size.y}`;
+      }
+
+      display.textContent = text;
+    }
+
+    // -- Image Loading (Single Mode) --
+    function loadSingleBase() {
+      const path = document.getElementById('baseImageSelect').value;
+      const name = document.getElementById('baseImageSelect').options[document.getElementById('baseImageSelect').selectedIndex].text;
+      if (!path) return;
+
+      // Replace base layer (index 0)
+      // If no layers, just add. If layers, replace 0.
+      const count = viewer1.world.getItemCount();
+      if (count === 0) {
+        viewer1.addTiledImage({
+          tileSource: path,
+          success: (event) => {
+            event.item.customName = name;
+            event.item.customPath = path;
+            updateLayersList();
+            updateDimensions();
+          }
+        });
+      } else {
+        const oldItem = viewer1.world.getItemAt(0);
+        viewer1.addTiledImage({
+          tileSource: path,
+          index: 0,
+          success: (event) => {
+            event.item.customName = name;
+            event.item.customPath = path;
+            viewer1.world.removeItem(oldItem);
+            updateLayersList();
+            updateDimensions();
+          }
+        });
+      }
+    }
+
+    // -- Image Loading (Split Mode) --
+    function loadSplitLeft() {
+      const path = document.getElementById('leftImageSelect').value;
+      const name = document.getElementById('leftImageSelect').options[document.getElementById('leftImageSelect').selectedIndex].text;
+      if (!path) return;
+
+      viewer1.world.removeAll();
+      viewer1.addTiledImage({
+        tileSource: path,
+        success: (event) => {
+          event.item.customName = name;
+          event.item.customPath = path;
+          updateDimensions();
+        }
+      });
+    }
+
+    function loadSplitRight() {
+      const path = document.getElementById('rightImageSelect').value;
+      if (!path) return;
+      viewer2.open(path);
+      // viewer2 open triggers 'open' event which calls updateDimensions
+    }
+
+    // -- Sync Logic --
+    function setupSync() {
+      const v1 = viewer1;
+      const v2 = viewer2;
+
+      let v1Leading = false;
+      let v2Leading = false;
+
+      function sync1to2() {
+        if (!document.getElementById('syncCheck').checked) return;
+        if (v2Leading) return;
+        v1Leading = true;
+        v2.viewport.zoomTo(v1.viewport.getZoom());
+        v2.viewport.panTo(v1.viewport.getCenter());
+        v1Leading = false;
+      }
+
+      function sync2to1() {
+        if (!document.getElementById('syncCheck').checked) return;
+        if (v1Leading) return;
+        v2Leading = true;
+        v1.viewport.zoomTo(v2.viewport.getZoom());
+        v1.viewport.panTo(v2.viewport.getCenter());
+        v2Leading = false;
+      }
+
+      v1.addHandler('zoom', sync1to2);
+      v1.addHandler('pan', sync1to2);
+      v2.addHandler('zoom', sync2to1);
+      v2.addHandler('pan', sync2to1);
+    }
+
+    // -- Layer Logic (Single View) --
+    function addLayer() {
+      const select = document.getElementById('layerImageSelect');
+      const path = select.value;
+      const name = select.options[select.selectedIndex].text;
+      if (!path) return;
+
+      viewer1.addTiledImage({
+        tileSource: path,
+        opacity: 0.5,
+        success: (event) => {
+          event.item.customName = name;
+          event.item.customPath = path;
+          updateLayersList();
+          updateDimensions();
+        }
+      });
+    }
+
+    function updateLayersList() {
+      const list = document.getElementById('layers-list');
+      list.innerHTML = '';
+      const count = viewer1.world.getItemCount();
+
+      // Iterate forward to show base layer at top, new layers below
+      for (let i = 0; i < count; i++) {
+        const item = viewer1.world.getItemAt(i);
+        const name = item.customName || `Layer ${i}`;
+
+        const div = document.createElement('div');
+        div.className = 'layer-item';
+        div.innerHTML = `
+        <span title="${name}">${i + 1}. ${name}</span>
+        <input type="range" min="0" max="1" step="0.1" value="${item.getOpacity()}" 
+               oninput="setLayerOpacity(${i}, this.value)">
+        <span class="remove-layer" onclick="removeLayer(${i})" style="${i === 0 ? 'visibility:hidden' : ''}">×</span>
+      `;
+        list.appendChild(div);
+      }
+    }
+
+    window.setLayerOpacity = (index, val) => {
+      const item = viewer1.world.getItemAt(index);
+      if (item) item.setOpacity(parseFloat(val));
+    };
+
+    window.removeLayer = (index) => {
+      const item = viewer1.world.getItemAt(index);
+      if (item) viewer1.world.removeItem(item);
+      updateLayersList();
+    };
+
+    // Run
+    init();
+
+  </script>
+</body>
+
+</html>

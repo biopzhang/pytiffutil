@@ -1,0 +1,50 @@
+#!/bin/bash
+
+# Check if input file is provided
+if [ $# -lt 1 ]; then
+    echo "Usage: $0 <input_file> [output_prefix]"
+    echo "If output_prefix is not provided, the input filename (without extension) will be used."
+    exit 1
+fi
+
+# Get absolute path of input file
+input_file=$(realpath "$1")
+
+# Check if input file exists
+if [ ! -f "$input_file" ]; then
+    echo "Error: Input file '$input_file' does not exist."
+    exit 1
+fi
+
+# Create tiles directory if it doesn't exist
+mkdir -p tiles
+
+# If output prefix is not provided, use input filename without extension
+if [ -z "$2" ]; then
+    output_prefix=$(basename "$input_file" | sed 's/\.[^.]*$//')
+else
+    output_prefix="$2"
+fi
+
+# Remove existing tiles if they exist
+rm -rf "tiles/${output_prefix}_files"
+rm -f "tiles/${output_prefix}.dzi"
+
+# Run vips command with additional parameters
+vips dzsave "${input_file}" \
+    "tiles/${output_prefix}" \
+    --tile-size=512 \
+    --overlap=1 \
+    --suffix=.jpg \
+    --compression=0 \
+    --container=fs \
+    --layout=dz 
+
+# Check if vips command was successful
+if [ $? -eq 0 ]; then
+    echo "Successfully created tiles for '$input_file'"
+    echo "Output files are in: tiles/$output_prefix"
+else
+    echo "Error: Failed to create tiles for '$input_file'"
+    exit 1
+fi 

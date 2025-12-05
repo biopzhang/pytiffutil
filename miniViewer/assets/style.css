@@ -1,0 +1,88 @@
+/* ────────────────────────────
+   1) Style the toggle button 
+────────────────────────────── */
+.toggle-btn {
+  position: absolute;    /* Let it float inside the sidebar */
+  top: 10px;             /* 10px down from the top of the sidebar */
+  right: -15px;          /* 15px into the “main content” side, so half overlaps */
+  width: 30px;
+  height: 30px;
+  background-color: #ffffff;
+  border: 1px solid #0f3057;
+  border-radius: 4px;
+  font-size: 16px;
+  color: #0f3057;
+  cursor: pointer;
+  z-index: 1000;         /* So it always sits on top of the sidebar content */
+  box-shadow: 0 0 4px rgba(0,0,0,0.2);
+}
+.toggle-btn:hover {
+  background-color: #f0f0f0;
+}
+
+/* ────────────────────────────
+   2) Style for the visualization‐buttons
+────────────────────────────── */
+.btn {
+  background-color: #ffffff;
+  border: 1px solid #0f3057;
+  padding: 6px 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 14px;
+  color: #0f3057;
+  transition: background-color 0.2s ease;
+}
+.btn:hover {
+  background-color: #e8f1fa;
+}
+/* When a button is “active,” highlight it in bright blue */
+.btn.active {
+  background-color: #007bff;
+  color: white;
+  border-color: #0056b3;
+}
+
+/* ────────────────────────────
+   3) END SESSION button 
+────────────────────────────── */
+.button {
+  margin-top: 12px;
+  background-color: #dc3545;
+  color: white;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.button:hover {
+  background-color: #c82333;
+}
+
+/* ────────────────────────────
+   4) Text styling inside sidebar
+────────────────────────────── */
+.text {
+  margin-top: 12px;
+  color: #ffffff;
+  font-size: 12px;
+}
+
+/* ────────────────────────────
+   5) Sidebar title styling
+────────────────────────────── */
+.panel-title {
+  margin-bottom: 8px;
+  color: #ffffff;
+  font-size: 18px;
+}
+
+/* ────────────────────────────
+   6) Body and main‐content background 
+────────────────────────────── */
+body {
+  margin: 0;
+  padding: 0;
+}
+

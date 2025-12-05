@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>wsiView</title>
+
+  <!-- OpenSeadragon core -->
+  <script
+    src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/openseadragon.min.js"
+    crossorigin="anonymous"
+    referrerpolicy="no-referrer"
+  ></script>
+
+  <!-- 2) Annotorious + OpenSeadragon plugin CSS (v2.7.18) -->
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/@recogito/annotorious-openseadragon@2.7.18/dist/annotorious.min.css"
+    crossorigin="anonymous"
+  />
+
+  <!-- 3) Annotorious + OpenSeadragon plugin JS (v2.7.18) -->
+  <script
+    src="https://cdn.jsdelivr.net/npm/@recogito/annotorious-openseadragon@2.7.18/dist/openseadragon-annotorious.min.js"
+    crossorigin="anonymous"
+  ></script>
+
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      font-family: sans-serif;
+    }
+
+    #viewer {
+      width: 100vw;
+      height: 100vh;
+    }
+
+    #imageSelector {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 3000;
+      background: rgba(255, 255, 255, 0.9);
+      padding: 8px 12px;
+      border-radius: 4px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    }
+
+    #loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0, 0, 0, 0.7);
+      color: white;
+      padding: 20px;
+      border-radius: 8px;
+      display: none;
+      z-index: 2500;
+      font-family: sans-serif;
+      font-size: 14px;
+    }
+
+    /* ─────────────────────────────────────────────────────────────── */
+    /* Annotorious overlay must sit above the OSD tiles but below
+       the imageSelector dropdown.                                     */
+    .a9s-openseadragon-container {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 2000;       /* below #imageSelector (3000) but above tiles */
+      pointer-events: auto;/* allow clicks on toolbar/buttons */
+    }
+
+    #controls {
+      position: absolute;
+      bottom: 10px;  /* Changed from top to bottom */
+      right: 10px;
+      z-index: 3000;
+      background: rgba(255, 255, 255, 0.9);
+      padding: 8px 12px;
+      border-radius: 4px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+      min-width: 200px;
+    }
+
+    #controls label {
+      display: block;
+      margin: 8px 0;
+      font-size: 14px;
+    }
+
+    #controls input[type="checkbox"] {
+      margin-right: 8px;
+    }
+
+    #controls select {
+      width: 100%;
+      margin-top: 4px;
+    }
+
+    #selectionOverlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 2600;
+    }
+
+    #controls .section-title {
+      margin-top: 10px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #333;
+    }
+
+    #coordinateTool {
+      margin-top: 6px;
+      border-top: 1px solid #e0e0e0;
+      padding-top: 8px;
+      font-size: 13px;
+    }
+
+    #coordinateTool label.mode-option {
+      display: inline-flex;
+      align-items: center;
+      margin-right: 10px;
+    }
+
+    #coordinateTool label.mode-option input {
+      margin-right: 4px;
+    }
+
+    #measurementOutput {
+      margin-top: 6px;
+      padding: 6px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      background: #f8f8f8;
+      font-family: monospace;
+      font-size: 12px;
+      line-height: 1.4;
+      min-height: 40px;
+      white-space: pre-line;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- Loading indicator (shown while fetch('/list_dzi'))             -->
+  <div id="loading">Loading available images…</div>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- Image selector dropdown; populated by loadAvailableImages()    -->
+  <div id="imageSelector">
+    <select id="imageSelect" onchange="changeImage()">
+      <option value="">Select an image…</option>
+    </select>
+  </div>
+
+  <!-- Remove the duplicate controls div from HTML since we create it in JavaScript -->
+  <div id="viewer"></div>
+  <canvas id="selectionOverlay"></canvas>
+
+  <script>
+    // ───────────────────────────────────────────────────────────────
+    // 1) Initialize OpenSeadragon
+    // ───────────────────────────────────────────────────────────────
+    const viewer = OpenSeadragon({
+      id: "viewer",
+      prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/images/",
+      showNavigator: true,
+      maxZoomPixelRatio: 2,
+      blendTime: 0.1,
+      navigatorPosition: "BOTTOM_LEFT"
+    });
+
+    // ───────────────────────────────────────────────────────────────
+    // 2) Placeholder for Annotorious instance; re-created per image
+    // ───────────────────────────────────────────────────────────────
+    let anno = null;
+
+    let currentImage = null;
+
+    const measurementTool = (() => {
+      const canvas = document.getElementById('selectionOverlay');
+      const ctx = canvas ? canvas.getContext('2d') : null;
+      const RECT_HANDLE_SIZE = 12;
+      const state = {
+        mode: 'point',
+        startPoint: null,
+        currentPoint: null,
+        lastSelection: null,
+        isSelecting: false,
+        activeHandle: null,
+        dragStartSelection: null,
+        dragStartPointer: null
+      };
+
+      const instructions = {
+        point: 'Click anywhere to capture pixel coordinates.',
+        rectangle: 'Click and drag to capture a bounding box.'
+      };
+
+      let outputElement = null;
+
+      function setMode(mode) {
+        if (state.mode === mode) {
+          return;
+        }
+        state.mode = mode;
+        reset();
+      }
+
+      function attachOutput(element) {
+        outputElement = element;
+        writeMessage();
+      }
+
+      function getInstructions() {
+        return instructions[state.mode];
+      }
+
+      function writeMessage(message) {
+        if (!outputElement) {
+          return;
+        }
+        outputElement.textContent = message || getInstructions();
+      }
+
+      function reset() {
+        state.isSelecting = false;
+        state.startPoint = null;
+        state.currentPoint = null;
+        state.lastSelection = null;
+        state.activeHandle = null;
+        state.dragStartSelection = null;
+        state.dragStartPointer = null;
+        drawOverlay();
+        writeMessage();
+      }
+
+      function onClick(event) {
+        if (state.mode === 'point' && !state.isSelecting) {
+          const imagePoint = toImagePoint(event.position);
+          if (!imagePoint) {
+            return;
+          }
+          event.preventDefaultAction = true;
+          state.lastSelection = null;
+          writeMessage(`x: ${Math.round(imagePoint.x)}, y: ${Math.round(imagePoint.y)}`);
+          drawOverlay();
+          return;
+        }
+
+        if (state.mode === 'rectangle') {
+          event.preventDefaultAction = true;
+        }
+      }
+
+      function onPress(event) {
+        if (state.mode !== 'rectangle') {
+          return;
+        }
+        const imagePoint = toImagePoint(event.position);
+        if (!imagePoint) {
+          return;
+        }
+        const handle = hitTest(event.position);
+        if (handle && beginHandleEdit(handle, imagePoint)) {
+          event.preventDefaultAction = true;
+          return;
+        }
+        beginSelection(imagePoint);
+        event.preventDefaultAction = true;
+      }
+
+      function onDrag(event) {
+        if (state.mode !== 'rectangle') {
+          return;
+        }
+        const imagePoint = toImagePoint(event.position);
+        if (!imagePoint) {
+          return;
+        }
+        if (state.activeHandle) {
+          updateSelectionFromHandle(imagePoint);
+          event.preventDefaultAction = true;
+          return;
+        }
+        if (!state.isSelecting) {
+          return;
+        }
+        state.currentPoint = imagePoint;
+        event.preventDefaultAction = true;
+        reportRectangle({ start: state.startPoint, end: state.currentPoint });
+        drawOverlay();
+      }
+
+      function onRelease(event) {
+        if (state.mode !== 'rectangle') {
+          return;
+        }
+        if (state.activeHandle) {
+          event.preventDefaultAction = true;
+          finishHandleEdit();
+          return;
+        }
+        if (!state.isSelecting) {
+          return;
+        }
+        const imagePoint = toImagePoint(event.position);
+        if (imagePoint) {
+          state.currentPoint = imagePoint;
+        }
+        commitSelection(state.startPoint, state.currentPoint);
+        state.isSelecting = false;
+        state.startPoint = null;
+        state.currentPoint = null;
+        event.preventDefaultAction = true;
+        if (state.lastSelection) {
+          reportRectangle(state.lastSelection);
+        } else {
+          writeMessage();
+        }
+        drawOverlay();
+      }
+
+      function beginSelection(point) {
+        state.isSelecting = true;
+        state.startPoint = point;
+        state.currentPoint = point;
+        state.lastSelection = null;
+        reportRectangle({ start: point, end: point });
+        drawOverlay();
+      }
+
+      function commitSelection(start, end) {
+        state.lastSelection = normalizeSelection(start, end);
+      }
+
+      function finishHandleEdit() {
+        state.activeHandle = null;
+        state.dragStartSelection = null;
+        state.dragStartPointer = null;
+        if (state.lastSelection) {
+          reportRectangle(state.lastSelection);
+        } else {
+          writeMessage();
+        }
+        drawOverlay();
+      }
+
+      function beginHandleEdit(handleType, pointerPoint) {
+        if (!state.lastSelection) {
+          return false;
+        }
+        state.activeHandle = handleType;
+        state.dragStartSelection = cloneSelection(state.lastSelection);
+        state.dragStartPointer = clonePoint(pointerPoint);
+        state.isSelecting = false;
+        return true;
+      }
+
+      function updateSelectionFromHandle(pointerPoint) {
+        if (!state.dragStartSelection || !state.activeHandle) {
+          return;
+        }
+        if (state.activeHandle === 'move') {
+          const dx = pointerPoint.x - state.dragStartPointer.x;
+          const dy = pointerPoint.y - state.dragStartPointer.y;
+          state.lastSelection = {
+            start: {
+              x: state.dragStartSelection.start.x + dx,
+              y: state.dragStartSelection.start.y + dy
+            },
+            end: {
+              x: state.dragStartSelection.end.x + dx,
+              y: state.dragStartSelection.end.y + dy
+            }
+          };
+        } else {
+          const start = clonePoint(state.dragStartSelection.start);
+          const end = clonePoint(state.dragStartSelection.end);
+          switch (state.activeHandle) {
+            case 'nw':
+              start.x = pointerPoint.x;
+              start.y = pointerPoint.y;
+              break;
+            case 'ne':
+              start.y = pointerPoint.y;
+              end.x = pointerPoint.x;
+              break;
+            case 'sw':
+              start.x = pointerPoint.x;
+              end.y = pointerPoint.y;
+              break;
+            case 'se':
+              end.x = pointerPoint.x;
+              end.y = pointerPoint.y;
+              break;
+            default:
+              break;
+          }
+          state.lastSelection = normalizeSelection(start, end);
+        }
+        if (state.lastSelection) {
+          reportRectangle(state.lastSelection);
+        }
+        drawOverlay();
+      }
+
+      function reportRectangle(selection) {
+        if (!selection || !selection.start || !selection.end) {
+          writeMessage();
+          return;
+        }
+        const left = Math.round(Math.min(selection.start.x, selection.end.x));
+        const top = Math.round(Math.min(selection.start.y, selection.end.y));
+        const right = Math.round(Math.max(selection.start.x, selection.end.x));
+        const bottom = Math.round(Math.max(selection.start.y, selection.end.y));
+        const width = Math.max(0, right - left);
+        const height = Math.max(0, bottom - top);
+        writeMessage(
+          `Top-left: (${left}, ${top})\nBottom-right: (${right}, ${bottom})\nSize: ${width} x ${height} px`
+        );
+      }
+
+      function drawOverlay() {
+        if (!ctx) {
+          return;
+        }
+        syncCanvasSize();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if (state.mode !== 'rectangle') {
+          return;
+        }
+        const selection = getActiveSelection();
+        if (!selection) {
+          return;
+        }
+        const bounds = selectionToPixelBounds(selection);
+        if (!bounds) {
+          return;
+        }
+        ctx.save();
+        ctx.strokeStyle = '#f5a623';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 3]);
+        ctx.strokeRect(bounds.x + 0.5, bounds.y + 0.5, bounds.width, bounds.height);
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(255, 165, 0, 0.2)';
+        ctx.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
+        ctx.restore();
+        drawHandles(bounds);
+      }
+
+      function getActiveSelection() {
+        if (state.isSelecting && state.startPoint && state.currentPoint) {
+          return { start: state.startPoint, end: state.currentPoint };
+        }
+        return state.lastSelection;
+      }
+
+      function selectionToPixelBounds(selection) {
+        const startPixels = imagePointToPixel(selection.start);
+        const endPixels = imagePointToPixel(selection.end);
+        if (!startPixels || !endPixels) {
+          return null;
+        }
+        return {
+          x: Math.min(startPixels.x, endPixels.x),
+          y: Math.min(startPixels.y, endPixels.y),
+          width: Math.abs(startPixels.x - endPixels.x),
+          height: Math.abs(startPixels.y - endPixels.y)
+        };
+      }
+
+      function drawHandles(bounds) {
+        const half = RECT_HANDLE_SIZE / 2;
+        const corners = [
+          { x: bounds.x, y: bounds.y },
+          { x: bounds.x + bounds.width, y: bounds.y },
+          { x: bounds.x, y: bounds.y + bounds.height },
+          { x: bounds.x + bounds.width, y: bounds.y + bounds.height }
+        ];
+        ctx.save();
+        ctx.fillStyle = '#f5a623';
+        corners.forEach(handle => {
+          ctx.fillRect(handle.x - half, handle.y - half, RECT_HANDLE_SIZE, RECT_HANDLE_SIZE);
+        });
+        ctx.restore();
+      }
+
+      function syncCanvasSize() {
+        if (!canvas || !viewer || !viewer.container) {
+          return;
+        }
+        const { width, height } = viewer.container.getBoundingClientRect();
+        if (canvas.width !== Math.floor(width) || canvas.height !== Math.floor(height)) {
+          canvas.width = Math.floor(width);
+          canvas.height = Math.floor(height);
+        }
+      }
+
+      function resizeAndRedraw() {
+        syncCanvasSize();
+        drawOverlay();
+      }
+
+      function hitTest(position) {
+        if (!position || !state.lastSelection) {
+          return null;
+        }
+        const bounds = selectionToPixelBounds(state.lastSelection);
+        if (!bounds) {
+          return null;
+        }
+        const half = RECT_HANDLE_SIZE / 2;
+        const handles = [
+          { type: 'nw', x: bounds.x, y: bounds.y },
+          { type: 'ne', x: bounds.x + bounds.width, y: bounds.y },
+          { type: 'sw', x: bounds.x, y: bounds.y + bounds.height },
+          { type: 'se', x: bounds.x + bounds.width, y: bounds.y + bounds.height }
+        ];
+        for (const handle of handles) {
+          if (
+            Math.abs(position.x - handle.x) <= half &&
+            Math.abs(position.y - handle.y) <= half
+          ) {
+            return handle.type;
+          }
+        }
+        if (
+          position.x >= bounds.x &&
+          position.x <= bounds.x + bounds.width &&
+          position.y >= bounds.y &&
+          position.y <= bounds.y + bounds.height
+        ) {
+          return 'move';
+        }
+        return null;
+      }
+
+      function toImagePoint(position) {
+        if (!viewer || !viewer.world || viewer.world.getItemCount() === 0) {
+          return null;
+        }
+        const viewportPoint = viewer.viewport.pointFromPixel(position, true);
+        const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
+        const tiledImage = viewer.world.getItemAt(0);
+        if (tiledImage && typeof tiledImage.getContentSize === 'function') {
+          const size = tiledImage.getContentSize();
+          return {
+            x: clamp(imagePoint.x, 0, size.x),
+            y: clamp(imagePoint.y, 0, size.y)
+          };
+        }
+        return imagePoint;
+      }
+
+      function imagePointToPixel(point) {
+        if (!viewer || !point) {
+          return null;
+        }
+        const viewportPoint = viewer.viewport.imageToViewportCoordinates(point.x, point.y);
+        return viewer.viewport.pixelFromPoint(viewportPoint, true);
+      }
+
+      function normalizeSelection(start, end) {
+        if (!start || !end) {
+          return null;
+        }
+        return {
+          start: {
+            x: Math.min(start.x, end.x),
+            y: Math.min(start.y, end.y)
+          },
+          end: {
+            x: Math.max(start.x, end.x),
+            y: Math.max(start.y, end.y)
+          }
+        };
+      }
+
+      function clonePoint(point) {
+        return point ? { x: point.x, y: point.y } : null;
+      }
+
+      function cloneSelection(selection) {
+        if (!selection) {
+          return null;
+        }
+        return {
+          start: clonePoint(selection.start),
+          end: clonePoint(selection.end)
+        };
+      }
+
+      function clamp(value, min, max) {
+        return Math.min(Math.max(value, min), max);
+      }
+
+      return {
+        setMode,
+        attachOutput,
+        getInstructions,
+        reset,
+        onClick,
+        onPress,
+        onDrag,
+        onRelease,
+        resizeAndRedraw,
+        redraw: drawOverlay
+      };
+    })();
+
+    // Initialize controls
+    function initializeControls() {
+      console.log('Initializing controls...');
+      let controlsDiv = document.getElementById('controls');
+      if (!controlsDiv) {
+        controlsDiv = document.createElement('div');
+        controlsDiv.id = 'controls';
+        document.body.appendChild(controlsDiv);
+      }
+
+      controlsDiv.innerHTML = '';
+
+      const coordinateTitle = document.createElement('div');
+      coordinateTitle.className = 'section-title';
+      coordinateTitle.textContent = 'Coordinate Tool';
+      controlsDiv.appendChild(coordinateTitle);
+
+      const coordinateTool = document.createElement('div');
+      coordinateTool.id = 'coordinateTool';
+
+      const pointLabel = document.createElement('label');
+      pointLabel.className = 'mode-option';
+      const pointInput = document.createElement('input');
+      pointInput.type = 'radio';
+      pointInput.name = 'coordinateMode';
+      pointInput.value = 'point';
+      pointInput.checked = true;
+      pointInput.onchange = () => measurementTool.setMode('point');
+      pointLabel.appendChild(pointInput);
+      pointLabel.appendChild(document.createTextNode('Single Click'));
+
+      const rectLabel = document.createElement('label');
+      rectLabel.className = 'mode-option';
+      const rectInput = document.createElement('input');
+      rectInput.type = 'radio';
+      rectInput.name = 'coordinateMode';
+      rectInput.value = 'rectangle';
+      rectInput.onchange = () => measurementTool.setMode('rectangle');
+      rectLabel.appendChild(rectInput);
+      rectLabel.appendChild(document.createTextNode('Rectangle'));
+
+      coordinateTool.appendChild(pointLabel);
+      coordinateTool.appendChild(rectLabel);
+
+      const measurementOutputElement = document.createElement('div');
+      measurementOutputElement.id = 'measurementOutput';
+      measurementOutputElement.textContent = measurementTool.getInstructions();
+      coordinateTool.appendChild(measurementOutputElement);
+      measurementTool.attachOutput(measurementOutputElement);
+
+      controlsDiv.appendChild(coordinateTool);
+
+      console.log('Controls initialized successfully');
+    }
+
+    window.addEventListener('load', () => {
+      initializeControls();
+      setupMeasurementTool();
+    });
+
+    function setupMeasurementTool() {
+      measurementTool.resizeAndRedraw();
+
+      const refreshOverlay = () => measurementTool.redraw();
+
+      viewer.addHandler('canvas-click', measurementTool.onClick);
+      viewer.addHandler('canvas-press', measurementTool.onPress);
+      viewer.addHandler('canvas-drag', measurementTool.onDrag);
+      viewer.addHandler('canvas-release', measurementTool.onRelease);
+      viewer.addHandler('animation', refreshOverlay);
+      viewer.addHandler('pan', refreshOverlay);
+      viewer.addHandler('zoom', refreshOverlay);
+      viewer.addHandler('resize', measurementTool.resizeAndRedraw);
+      viewer.addHandler('open', () => {
+        measurementTool.resizeAndRedraw();
+        measurementTool.reset();
+      });
+
+      window.addEventListener('resize', measurementTool.resizeAndRedraw);
+    }
+
+    function changeImage() {
+      const select = document.getElementById("imageSelect");
+      const chosenPath = select.value;
+      if (chosenPath) {
+        const imageName = chosenPath.split('/').pop().replace('.dzi', '');
+        currentImage = imageName;
+        viewer.open(chosenPath);
+        measurementTool.reset();
+      }
+    }
+
+    // ───────────────────────────────────────────────────────────────
+    // 3) Once OSD "open" fires, (re)initialize Annotorious on it
+    // ───────────────────────────────────────────────────────────────
+    function setupAnnotorious() {
+      // Destroy any existing Annotorious first:
+      if (anno) {
+        anno.destroy();
+        anno = null;
+      }
+      // Create a new Annotorious instance bound to this OSD viewer
+      // (provided by the plugin's global `Annotorious` namespace)
+      anno = OpenSeadragon.Annotorious(viewer);
+      // Load annotations in W3C WebAnnotation format
+      //anno.loadAnnotations('annotations.w3c.json');
+    }
+
+    viewer.addHandler("open", function() {
+      setupAnnotorious();
+    });
+
+    // ───────────────────────────────────────────────────────────────
+    // 4) Fetch the list of available .dzi files from the server
+    //    and populate the dropdown.
+    // ───────────────────────────────────────────────────────────────
+    async function loadAvailableImages() {
+      const loading = document.getElementById("loading");
+      const select = document.getElementById("imageSelect");
+
+      try {
+        loading.style.display = "block";
+        const response = await fetch("/list_dzi");
+        if (!response.ok) {
+          throw new Error("Network response was not OK");
+        }
+        const dziFiles = await response.json();
+
+        // Remove any existing options beyond the first placeholder
+        while (select.options.length > 1) {
+          select.remove(1);
+        }
+
+        // Populate the dropdown with { name, path } objects
+        dziFiles.forEach(file => {
+          const opt = document.createElement("option");
+          opt.value = file.path;
+          opt.textContent = file.name;
+          select.appendChild(opt);
+        });
+
+        // If at least one image exists, auto‐select & open it
+        if (dziFiles.length > 0) {
+          select.value = dziFiles[0].path;
+          changeImage();
+        }
+      } catch (err) {
+        console.error("Failed to load available images:", err);
+        alert("Error: could not fetch image list. Is the server running?");
+      } finally {
+        loading.style.display = "none";
+      }
+    }
+
+    // ───────────────────────────────────────────────────────────────
+    // 5) If a tile fails to load, log + alert
+    // ───────────────────────────────────────────────────────────────
+    viewer.addHandler("tile-load-failed", function(event) {
+      console.error("Tile load failed:", event);
+      alert("Failed to load some image tiles. Check the filesystem.");
+    });
+
+    // ───────────────────────────────────────────────────────────────
+    // 6) On page load, fetch and populate the .dzi list
+    // ───────────────────────────────────────────────────────────────
+    loadAvailableImages();
+  </script>
+</body>
+</html>
