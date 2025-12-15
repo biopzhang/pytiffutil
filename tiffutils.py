@@ -698,6 +698,7 @@ def convert_to_tif(
     t: Optional[int] = None,
     c: Optional[Sequence[int] | int] = None,
     channels: Optional[Sequence[int]] = None,
+    to_uint8: bool = False,
 ) -> str:
     """Convert any image readable by tifffile or OpenSlide to a tiled compressed TIFF.
 
@@ -794,6 +795,12 @@ def convert_to_tif(
                 elif len(idx) >= 2:
                     arr = arr[..., idx]
         im_arr = arr
+
+        im_arr = arr
+    
+    # 8-bit conversion if requested
+    if to_uint8:
+        im_arr = _to_uint8(np.asarray(im_arr))
 
     im_arr = np.asarray(im_arr)
 
@@ -895,6 +902,7 @@ def main() -> None:  # CLI for conversion and inspection
     p_conv.add_argument("--compression", default="zlib", choices=["zlib", "lzw", "deflate", "none"], help="TIFF compression")
     p_conv.add_argument("--tile", default="1024", help="Tile size: e.g. '1024' or '1024x1024', or 'none' to disable")
     p_conv.add_argument("--bigtiff", default="auto", help="auto|yes|no")
+    p_conv.add_argument("--to-8bit", action="store_true", help="Force conversion to 8-bit depth (0-255)")
     p_conv.add_argument("--no-check-pil", action="store_true", help="Skip verifying output can be read by PIL")
     p_conv.add_argument("--openslide", action="store_true", help="Write a pyramidal TIFF readable by openslide-python")
     p_conv.add_argument("--openslide-levels", type=int, default=None, help="Maximum pyramid levels (default auto)")
@@ -968,6 +976,7 @@ def main() -> None:  # CLI for conversion and inspection
             z=args.z,
             t=args.t,
             c=c_sel,
+            to_uint8=args.to_8bit,
         )
         return
 

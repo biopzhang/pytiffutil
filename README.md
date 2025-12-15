@@ -2,7 +2,9 @@
 
 Compact helpers for inspecting and converting OME-TIFF and whole-slide images. The python script provides a command-line interface for common slide microscopy workflows such as generating RGB previews, converting images into tiled pyramidal TIFFs, and summarising image metadata. Tested on macOS and Linux.
 
+
 ## Features
+- (New) add a simple viewer for WSI (require vips)
 - Convert arbitrary images (OME-TIFF, TIFF, common raster formats, OpenSlide-readable slides) into tiled and optionally pyramidal TIFFs with compression.
 - Render quick RGB previews from large multi-dimensional OME-TIFF assets.
 - Inspect series, axes, and pyramid levels without fully loading the image.
