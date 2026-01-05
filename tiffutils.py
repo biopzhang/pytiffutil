@@ -152,6 +152,8 @@ def _write_openslide_tiff(
     metadata: Optional[Dict[str, Any]] = None,
     max_levels: int = 8,
     min_level_dim: int = 512,
+    resolution: Optional[Tuple[float, float]] = None,
+    resolutionunit: Optional[int] = None,
 ) -> None:
     """Write a pyramidal, tiled TIFF compatible with OpenSlide."""
     rgb = np.asarray(base_image)
@@ -165,6 +167,10 @@ def _write_openslide_tiff(
         photometric="rgb",
         planarconfig="contig",
     )
+    if resolution:
+        write_opts["resolution"] = resolution
+    if resolutionunit:
+        write_opts["resolutionunit"] = resolutionunit
 
     with tiff.TiffWriter(dst_path, bigtiff=bigtiff) as tif:
         tif.write(
@@ -699,6 +705,7 @@ def convert_to_tif(
     c: Optional[Sequence[int] | int] = None,
     channels: Optional[Sequence[int]] = None,
     to_uint8: bool = False,
+    mpp: Optional[float] = None,
 ) -> str:
     """Convert any image readable by tifffile or OpenSlide to a tiled compressed TIFF.
 
@@ -831,6 +838,14 @@ def convert_to_tif(
         else:
             max_levels = 8
         min_dim = max(1, int(openslide_min_dim))
+        if mpp:
+            resolution = (10000.0 / float(mpp), 10000.0 / float(mpp))
+            resolutionunit = 3  # Centimeter
+            metadata = metadata or {}
+        else:
+            resolution = None
+            resolutionunit = None
+
         _write_openslide_tiff(
             dst_path,
             prepared_base if prepared_base is not None else im_arr,
@@ -840,6 +855,8 @@ def convert_to_tif(
             metadata=metadata,
             max_levels=max_levels,
             min_level_dim=min_dim,
+            resolution=resolution,
+            resolutionunit=resolutionunit,
         )
 
         if check_with_pil:
@@ -849,13 +866,21 @@ def convert_to_tif(
         return dst_path
 
     # Write standard TIFF
+    write_kwargs = {
+        "bigtiff": bigtiff_flag,
+        "compression": compression_arg,
+        "tile": tile_arg,
+        "metadata": metadata,
+    }
+
+    if mpp:
+        write_kwargs["resolution"] = (10000.0 / float(mpp), 10000.0 / float(mpp))
+        write_kwargs["resolutionunit"] = 3  # Centimeter
+
     tiff.imwrite(
         dst_path,
         im_arr,
-        bigtiff=bigtiff_flag,
-        compression=compression_arg,
-        tile=tile_arg,
-        metadata=metadata,
+        **write_kwargs
     )
 
     if check_with_pil:
@@ -907,6 +932,7 @@ def main() -> None:  # CLI for conversion and inspection
     p_conv.add_argument("--openslide", action="store_true", help="Write a pyramidal TIFF readable by openslide-python")
     p_conv.add_argument("--openslide-levels", type=int, default=None, help="Maximum pyramid levels (default auto)")
     p_conv.add_argument("--openslide-min-dim", type=int, default=512, help="Stop pyramid when dimensions drop below this")
+    p_conv.add_argument("--mpp", type=float, default=None, help="Microns per pixel (sets resolution tags)")
     # OME selectors
     p_conv.add_argument("--series", type=int, default=None, help="OME series index (0-based)")
     p_conv.add_argument("--level", type=int, default=None, help="Pyramidal level index (0-based)")
@@ -977,6 +1003,7 @@ def main() -> None:  # CLI for conversion and inspection
             t=args.t,
             c=c_sel,
             to_uint8=args.to_8bit,
+            mpp=args.mpp,
         )
         return
 
