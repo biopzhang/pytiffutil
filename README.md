@@ -50,7 +50,7 @@ Summarise OME-TIFF metadata.
 ```bash
 pytiffutil describe slide.ome.tif
 ```
-prints a human-readable summary.
+prints a human-readable summary, including microns-per-pixel and physical size when available from OME metadata or TIFF resolution tags.
 
 ## Credits
 100% of the code was conjured by Codex; I just gave instructions, poked it to see if it worked, and tried not to trip over the power cord.

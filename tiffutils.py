@@ -8,6 +8,7 @@ import json
 import warnings
 from contextlib import contextmanager
 from typing import Optional, Sequence, Dict, Any, List, Tuple, Iterator
+import xml.etree.ElementTree as ET
 import numpy as np
 from PIL import Image
 import imageio.v3 as iio
@@ -20,6 +21,169 @@ except Exception:  # pragma: no cover - optional
 
 Image.MAX_IMAGE_PIXELS = None  # disable PIL max pixel limit
 logger = logging.getLogger(__name__)
+_TIFF_EXTENSIONS = {".tif", ".tiff", ".btf"}
+
+
+def _is_tiff_extension(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in _TIFF_EXTENSIONS
+
+
+def _local_xml_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ratio_to_float(value: Any) -> Optional[float]:
+    if isinstance(value, tuple) and len(value) == 2:
+        numerator = _float_or_none(value[0])
+        denominator = _float_or_none(value[1])
+        if numerator is None or denominator in (None, 0.0):
+            return None
+        return numerator / denominator
+    return _float_or_none(value)
+
+
+def _ome_unit_to_um(unit: Optional[str]) -> Optional[float]:
+    if not unit:
+        return 1.0
+    normalized = str(unit).strip().lower().replace("\u00b5", "u").replace("\u03bc", "u")
+    normalized = normalized.replace(" ", "")
+    if normalized in {"um", "micrometer", "micrometers", "micrometre", "micrometres", "micron", "microns"}:
+        return 1.0
+    if normalized in {"nm", "nanometer", "nanometers", "nanometre", "nanometres"}:
+        return 0.001
+    if normalized in {"mm", "millimeter", "millimeters", "millimetre", "millimetres"}:
+        return 1000.0
+    if normalized in {"cm", "centimeter", "centimeters", "centimetre", "centimetres"}:
+        return 10000.0
+    if normalized in {"m", "meter", "meters", "metre", "metres"}:
+        return 1000000.0
+    return None
+
+
+def _physical_size_to_um(value: Any, unit: Optional[str]) -> Optional[float]:
+    size = _float_or_none(value)
+    multiplier = _ome_unit_to_um(unit)
+    if size is None or multiplier is None:
+        return None
+    return size * multiplier
+
+
+def _ome_mpp_by_series(ome_metadata: Optional[str]) -> Dict[int, Dict[str, Any]]:
+    if not ome_metadata:
+        return {}
+
+    try:
+        root = ET.fromstring(ome_metadata)
+    except ET.ParseError as err:
+        logger.debug("Unable to parse OME metadata for mpp: %s", err)
+        return {}
+
+    mpp_by_series: Dict[int, Dict[str, Any]] = {}
+    pixels_elements = [elem for elem in root.iter() if _local_xml_name(elem.tag) == "Pixels"]
+    for idx, pixels in enumerate(pixels_elements):
+        mpp_x = _physical_size_to_um(
+            pixels.attrib.get("PhysicalSizeX"),
+            pixels.attrib.get("PhysicalSizeXUnit"),
+        )
+        mpp_y = _physical_size_to_um(
+            pixels.attrib.get("PhysicalSizeY"),
+            pixels.attrib.get("PhysicalSizeYUnit"),
+        )
+        if mpp_x is None and mpp_y is None:
+            continue
+        mpp_by_series[idx] = {
+            "mpp_x": mpp_x,
+            "mpp_y": mpp_y,
+            "mpp_source": "ome",
+        }
+    return mpp_by_series
+
+
+def _tiff_resolution_unit_to_um(unit: Any) -> Optional[float]:
+    try:
+        code = int(unit)
+    except (TypeError, ValueError):
+        code = None
+
+    if code == 2:
+        return 25400.0
+    if code == 3:
+        return 10000.0
+
+    unit_text = str(unit).lower()
+    if "inch" in unit_text:
+        return 25400.0
+    if "centimeter" in unit_text or "centimetre" in unit_text or unit_text == "cm":
+        return 10000.0
+    return None
+
+
+def _tiff_resolution_mpp(page: Any) -> Dict[str, Any]:
+    tags = getattr(page, "tags", {})
+    x_tag = tags.get("XResolution")
+    y_tag = tags.get("YResolution")
+    unit_tag = tags.get("ResolutionUnit")
+    if x_tag is None or y_tag is None or unit_tag is None:
+        return {}
+
+    unit_um = _tiff_resolution_unit_to_um(getattr(unit_tag, "value", unit_tag))
+    x_resolution = _ratio_to_float(getattr(x_tag, "value", x_tag))
+    y_resolution = _ratio_to_float(getattr(y_tag, "value", y_tag))
+    if unit_um is None or x_resolution in (None, 0.0) or y_resolution in (None, 0.0):
+        return {}
+
+    return {
+        "mpp_x": unit_um / x_resolution,
+        "mpp_y": unit_um / y_resolution,
+        "mpp_source": "tiff_resolution",
+    }
+
+
+def _shape_xy_pixels(shape: Any, axes: Any) -> Tuple[Optional[int], Optional[int]]:
+    shape_tuple = tuple(shape or ())
+    axes_text = str(axes or "")
+    if not shape_tuple:
+        return None, None
+
+    if "X" in axes_text and "Y" in axes_text:
+        x_idx = axes_text.index("X")
+        y_idx = axes_text.index("Y")
+        if x_idx < len(shape_tuple) and y_idx < len(shape_tuple):
+            return int(shape_tuple[x_idx]), int(shape_tuple[y_idx])
+
+    if len(shape_tuple) >= 2:
+        return int(shape_tuple[1]), int(shape_tuple[0])
+    return None, None
+
+
+def _add_mpp_metadata(entry: Dict[str, Any], mpp_info: Dict[str, Any]) -> None:
+    mpp_x = mpp_info.get("mpp_x")
+    mpp_y = mpp_info.get("mpp_y")
+    if mpp_x is None and mpp_y is None:
+        return
+
+    entry.update(mpp_info)
+    entry["mpp_unit"] = "um/px"
+
+    width_px, height_px = _shape_xy_pixels(entry.get("shape"), entry.get("axes"))
+    if width_px is not None and mpp_x is not None:
+        entry["physical_size_x_um"] = width_px * float(mpp_x)
+    if height_px is not None and mpp_y is not None:
+        entry["physical_size_y_um"] = height_px * float(mpp_y)
+
+
+def _format_optional_float(value: Any) -> str:
+    if value is None:
+        return "unknown"
+    return f"{float(value):.6g}"
+
 
 try:  # Pillow < 10 compatibility
     _LANCZOS = Image.Resampling.LANCZOS  # type: ignore[attr-defined]
@@ -477,10 +641,8 @@ def read_image(
     Returns:
         PIL.Image.Image
     """
-    ext = os.path.splitext(path)[1].lower()
-
     # Prefer tifffile for TIFF/OME-TIFF to precisely select axes/levels
-    if ext in {".tif", ".tiff"} and tiff is not None:
+    if _is_tiff_extension(path) and tiff is not None:
         try:
             with _suppress_tifffile_shape_warning():
                 with tiff.TiffFile(path) as tf:  # type: ignore[attr-defined]
@@ -580,7 +742,7 @@ def read_image(
         arr: Optional[np.ndarray] = None
         sel_c = channels if channels is not None else c if isinstance(c, Sequence) else None
 
-        if ext not in {".tif", ".tiff"} and openslide is not None:
+        if not _is_tiff_extension(path) and openslide is not None:
             try:
                 arr = _read_openslide_image(path, level=level)
             except Exception as e_os:
@@ -621,17 +783,19 @@ def describe_ome(path: str) -> Dict[str, Any]:
     pick the appropriate series/level/Z/T/C indices (e.g., from spaceranger metadata).
 
     Returns a dict with keys: 'is_tiff', 'is_ome' (if available), and 'series'.
-    Each series item includes: index, shape, axes, dtype, n_levels.
+    Each series item includes: index, shape, axes, dtype, n_levels, and mpp
+    metadata when available.
     """
     info: Dict[str, Any] = {"is_tiff": False, "is_ome": None, "series": []}
-    ext = os.path.splitext(path)[1].lower()
-    if ext not in {".tif", ".tiff"} or tiff is None:
+    if not _is_tiff_extension(path) or tiff is None:
         return info
     try:
         with _suppress_tifffile_shape_warning():
             with tiff.TiffFile(path) as tf:  # type: ignore[attr-defined]
                 info["is_tiff"] = True
                 info["is_ome"] = getattr(tf, "is_ome", None)
+                ome_mpp = _ome_mpp_by_series(getattr(tf, "ome_metadata", None))
+                tiff_mpp = _tiff_resolution_mpp(tf.pages[0]) if len(tf.pages) else {}
 
                 try:
                     series_iter = list(tf.series)
@@ -657,16 +821,16 @@ def describe_ome(path: str) -> Dict[str, Any]:
                                 dtype = str(arr.dtype)
                         except Exception as arr_err:
                             logger.debug("describe_ome fallback array load failed: %s", arr_err)
-                    info["series"].append(
-                        {
-                            "index": 0,
-                            "shape": shape,
-                            "axes": axes,
-                            "dtype": dtype,
-                            "n_levels": 1,
-                            "source": "page_fallback",
-                        }
-                    )
+                    entry = {
+                        "index": 0,
+                        "shape": shape,
+                        "axes": axes,
+                        "dtype": dtype,
+                        "n_levels": 1,
+                        "source": "page_fallback",
+                    }
+                    _add_mpp_metadata(entry, ome_mpp.get(0, {}) or tiff_mpp)
+                    info["series"].append(entry)
                 else:
                     for idx, s in enumerate(series_iter):
                         entry = {
@@ -676,6 +840,7 @@ def describe_ome(path: str) -> Dict[str, Any]:
                             "dtype": str(getattr(s, "dtype", "")),
                             "n_levels": len(getattr(s, "levels", []) or []),
                         }
+                        _add_mpp_metadata(entry, ome_mpp.get(idx, {}) or tiff_mpp)
                         info["series"].append(entry)
     except Exception as e:  # pragma: no cover
         logger.debug(f"describe_ome failed: {e}")
@@ -719,9 +884,8 @@ def convert_to_tif(
         raise ImportError("tifffile is required for convert_to_tif. Install via 'pip install tifffile'.")
 
     # Read with tifffile (for TIFF) to preserve precision and allow OME selections
-    ext = os.path.splitext(src_path)[1].lower()
     sel_c = channels if channels is not None else c
-    if ext in {".tif", ".tiff"}:
+    if _is_tiff_extension(src_path):
         with _suppress_tifffile_shape_warning():
             with tiff.TiffFile(src_path) as tf:  # type: ignore[attr-defined]
                 series_index = int(series or 0)
@@ -1021,7 +1185,20 @@ def main() -> None:  # CLI for conversion and inspection
                 shape = s.get('shape')
                 dtype = s.get('dtype')
                 n_levels = s.get('n_levels')
-                print(f"series {idx}: axes={axes} shape={shape} dtype={dtype} levels={n_levels}")
+                line = f"series {idx}: axes={axes} shape={shape} dtype={dtype} levels={n_levels}"
+                if s.get("mpp_x") is not None or s.get("mpp_y") is not None:
+                    line += (
+                        f" mpp=(x={_format_optional_float(s.get('mpp_x'))}, "
+                        f"y={_format_optional_float(s.get('mpp_y'))}) {s.get('mpp_unit', 'um/px')}"
+                    )
+                if s.get("physical_size_x_um") is not None or s.get("physical_size_y_um") is not None:
+                    line += (
+                        f" physical_size=(x={_format_optional_float(s.get('physical_size_x_um'))}, "
+                        f"y={_format_optional_float(s.get('physical_size_y_um'))}) um"
+                    )
+                if s.get("mpp_source") is not None:
+                    line += f" mpp_source={s.get('mpp_source')}"
+                print(line)
         return
 
 
